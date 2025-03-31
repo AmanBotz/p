@@ -225,10 +225,32 @@ def download_m3u8_playlist(playlist, output_file, key, directory, max_thread=1, 
         return
     try:
     merge_segments([os.path.join(directory, f) for f in segment_files], output_file)
-except Exception as e:
-    print(f"Merge failed: {str(e)}")
-    return
-    print(f"\nVideo saved as {output_file}")
+    except Exception as e:
+        print(f"Merge failed: {str(e)}")
+        return
+        print(f"\nVideo saved as {output_file}")
+
+    def merge_segments(segment_files, output_file):
+    """Merge segments using FFmpeg concat demuxer"""
+    try:
+        # Create list file for FFmpeg
+        list_file = 'filelist.txt'
+        with open(list_file, 'w') as f:
+            for file in segment_files:
+                f.write(f"file '{file}'\n")
+        
+        cmd = [
+            'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+            '-i', list_file, '-c', 'copy', output_file
+        ]
+        subprocess.run(cmd, check=True)
+        return True
+    except Exception as e:
+        logger.error(f"Merge failed: {str(e)}")
+        return False
+    finally:
+        if os.path.exists(list_file):
+            os.remove(list_file)
 
 async def handle_download_start(context, html_path, output_base, chat_id, message_id):
     try:
