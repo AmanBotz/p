@@ -1,3 +1,4 @@
+bot.run()
 import os
 import requests
 from pyrogram import Client
@@ -12,93 +13,88 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Bot is running", 200
+    return "Bot Operational ✅", 200
 
-# ===== PARMAR ACADEMY API =====
+# ===== PARMAR ACADEMY API INTEGRATION =====
 HOST = "https://parmaracademyapi.classx.co.in"
 HEADERS = {
     "Authorization": os.getenv("AUTHORIZATION"),
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Auth-Key": "appxapi"
 }
 
 def get_all_courses():
-    """Get all available courses"""
+    """Fetch available courses with error handling"""
     try:
-        res = requests.get(
+        response = requests.get(
             f"{HOST}/get/courselist?exam_name=&start=0",
             headers=HEADERS,
             timeout=10
         )
-        return res.json().get("data", [])
-    except Exception:
+        return response.json().get("data", [])
+    except Exception as e:
+        print(f"Course fetch error: {str(e)}")
         return []
 
-def get_subjects(course_id):
-    """Get subjects for a course"""
+def get_subjects(course_id: str):
+    """Fetch subjects for a course"""
     try:
-        res = requests.get(
+        response = requests.get(
             f"{HOST}/get/allsubjectfrmlivecourseclass?courseid={course_id}&start=-1",
             headers=HEADERS,
             timeout=10
         )
-        return res.json().get("data", [])
-    except Exception:
+        return response.json().get("data", [])
+    except Exception as e:
+        print(f"Subject fetch error: {str(e)}")
         return []
 
-def get_topics(course_id, subject_id):
-    """Get topics for a subject"""
+def get_topics(course_id: str, subject_id: str):
+    """Fetch topics for a subject"""
     try:
-        res = requests.get(
+        response = requests.get(
             f"{HOST}/get/alltopicfrmlivecourseclass?courseid={course_id}&subjectid={subject_id}&start=-1",
             headers=HEADERS,
             timeout=10
         )
-        return res.json().get("data", [])
-    except Exception:
+        return response.json().get("data", [])
+    except Exception as e:
+        print(f"Topic fetch error: {str(e)}")
         return []
 
-def get_videos(course_id, subject_id, topic_id):
-    """Get videos for a topic"""
+def get_video_token(course_id: str, video_id: str):
+    """Get video decryption token"""
     try:
-        res = requests.get(
-            f"{HOST}/get/livecourseclassbycoursesubtopconceptapiv3?courseid={course_id}&subjectid={subject_id}&topicid={topic_id}&conceptid=&windowsapp=false&start=-1",
-            headers=HEADERS,
-            timeout=10
-        )
-        return [v for v in res.json().get("data", []) if v.get("material_type") == "VIDEO"]
-    except Exception:
-        return []
-
-def get_video_token(course_id, video_id):
-    """Get playback token for a video"""
-    try:
-        res = requests.get(
+        response = requests.get(
             f"{HOST}/get/fetchVideoDetailsById?course_id={course_id}&video_id={video_id}&ytflag=0",
             headers=HEADERS,
             timeout=10
         )
-        return res.json()["data"]["video_player_token"]
-    except Exception:
+        return response.json()["data"]["video_player_token"]
+    except Exception as e:
+        print(f"Token fetch error: {str(e)}")
         return None
 
-# Initialize Pyrogram
+# Initialize Pyrogram Client
 bot = Client(
-    "parmar_bot",
+    name="parmar_bot",
     api_id=int(os.getenv("API_ID")),
     api_hash=os.getenv("API_HASH"),
     bot_token=os.getenv("BOT_TOKEN")
 )
 
-# Import handlers after bot is defined
+# Import handlers after bot initialization
 from bot_handlers import *
 
 if __name__ == "__main__":
     import threading
-    # Start Flask health check
+    # Start Flask server for health checks
     threading.Thread(
         target=app.run,
         kwargs={'host': '0.0.0.0', 'port': 8000}
     ).start()
-    # Start Telegram bot
+    
+    # Start Telegram Bot
+    print("Bot is starting...")
     bot.run()
+    print("Bot stopped")
