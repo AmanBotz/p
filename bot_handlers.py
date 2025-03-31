@@ -1,142 +1,154 @@
-import os
-import re
-import json
+from pyrogram import filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from bot import bot, get_all_courses, get_subjects, get_topics, get_video_token
 import time
-from pyrogram import Client, filters
-from pyrogram.types import (
-    Message,
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton
-)
-from bot import bot, get_all_courses, get_subjects  # Import from your bot.py
 
-# ===== SIMPLE PROGRESS TRACKER =====
-class Progress:
+# ===== PROGRESS TRACKER =====
+class ProgressTracker:
     def __init__(self):
-        self.steps = {
-            'start': "🚀 Starting...",
-            'courses': "📚 Loading courses...",
-            'subjects': "📖 Fetching subjects...",
-            'videos': "🎬 Finding videos..."
-        }
-    
-    async def show(self, message, step):
-        """Super simple progress updates"""
-        text = self.steps.get(step, "⏳ Processing...")
-        await message.edit_text(f"{text}\n\nPlease wait...")
+        self.last_update = 0
+        
+    async def update(self, message, text):
+        """Rate-limited progress updates"""
+        if time.time() - self.last_update > 5:  # 5-second throttle
+            await message.edit_text(text[:4000])  # Truncate if too long
+            self.last_update = time.time()
 
-progress = Progress()
+progress = ProgressTracker()
 
-# ===== EASY ERROR HANDLING =====
-async def safe_delete(message):
-    """Delete messages without crashing"""
+# ===== HELPER FUNCTIONS =====
+async def safe_edit(message, text, buttons=None):
+    """Crash-proof message editing"""
     try:
-        await message.delete()
-    except:
+        await message.edit_text(
+            text=text,
+            reply_markup=buttons
+        )
+    except Exception:
         pass
 
-# ===== NOOB-PROOF HANDLERS =====
+# ===== BOT COMMANDS =====        
+@bot.on_message(filters.command(["start", "help"]))
+async def start_command(client, message):
+    await message.reply(
+        "📚 **Parmar Academy Video Bot**\n\n"
+        "Use /courses to browse available content\n"
+        "Use /cancel to stop any operation"
+    )
+
 @bot.on_message(filters.command("courses"))
 async def show_courses(client, message):
-    """Simple course lister with big buttons"""
-    try:
-        courses = get_all_courses()
-        keyboard = []
-        
-        # Make big easy-to-press buttons
-        for i, course in enumerate(courses[:10], 1):  # Show first 10 only
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"📗 {i}. {course['course_name'][:20]}",
-                    callback_data=f"course_{course['id']}"
-                )
-            ])
-        
-        # Add cancel button
+    courses = get_all_courses()
+    if not courses:
+        await message.reply("❌ No courses available currently")
+        return
+
+    keyboard = []
+    for idx, course in enumerate(courses[:10], 1):  # Limit to 10 courses
         keyboard.append([
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel")
+            InlineKeyboardButton(
+                f"{idx}. {course['course_name'][:30]}",
+                callback_data=f"course_{course['id']}"
+            )
         ])
         
-        await message.reply(
-            "**Available Courses:**\n(Select with buttons below)",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    except Exception as e:
-        await message.reply(f"😢 Oops! Error: {str(e)[:200]}")
+    await message.reply(
+        "**Available Courses:**\nSelect one:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
+# ===== CALLBACK HANDLERS =====
 @bot.on_callback_query(filters.regex(r"^course_"))
-async def handle_course_select(client, callback):
-    """When user clicks a course button"""
-    try:
-        await progress.show(callback.message, 'subjects')
-        course_id = callback.data.split("_")[1]
+async def handle_course(client, callback):
+    course_id = callback.data.split("_")[1]
+    subjects = get_subjects(course_id)
+    
+    if not subjects:
+        await callback.answer("No subjects found!", show_alert=True)
+        return
+
+    keyboard = []
+    for idx, subject in enumerate(subjects[:10], 1):
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{idx}. {subject['subject_name'][:30]}", 
+                callback_data=f"subject_{course_id}_{subject['subjectid']}"
+            )
+        ])
+        
+    # Add back button
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_courses")])
+    
+    await safe_edit(
+        callback.message,
+        "**Available Subjects:**\nSelect one:",
+        InlineKeyboardMarkup(keyboard)
+    )
+
+@bot.on_callback_query(filters.regex(r"^subject_"))
+async def handle_subject(client, callback):
+    _, course_id, subject_id = callback.data.split("_")
+    topics = get_topics(course_id, subject_id)
+    
+    if not topics:
+        await callback.answer("No topics found!", show_alert=True)
+        return
+
+    keyboard = []
+    for idx, topic in enumerate(topics[:10], 1):
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{idx}. {topic['topic_name'][:30]}",
+                callback_data=f"topic_{course_id}_{subject_id}_{topic['topicid']}"
+            )
+        ])
+        
+    keyboard.append([
+        InlineKeyboardButton("🔙 Back", callback_data=f"back_subjects_{course_id}")
+    ])
+    
+    await safe_edit(
+        callback.message,
+        "**Available Topics:**\nSelect one:",
+        InlineKeyboardMarkup(keyboard)
+    )
+
+@bot.on_callback_query(filters.regex(r"^back_"))
+async def handle_back(client, callback):
+    data = callback.data.split("_")
+    
+    if data[1] == "courses":
+        await show_courses(client, callback.message)
+    elif data[1] == "subjects":
+        course_id = data[2]
         subjects = get_subjects(course_id)
         
         keyboard = []
-        for i, subject in enumerate(subjects[:10], 1):  # First 10 subjects
+        for idx, subject in enumerate(subjects[:10], 1):
             keyboard.append([
                 InlineKeyboardButton(
-                    f"📘 {i}. {subject['subject_name'][:20]}", 
+                    f"{idx}. {subject['subject_name'][:30]}",
                     callback_data=f"subject_{course_id}_{subject['subjectid']}"
                 )
             ])
-        
-        keyboard.append([
-            InlineKeyboardButton("🔙 Back", callback_data="back_to_courses"),
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel")
-        ])
-        
-        await callback.edit_message_text(
-            "**Available Subjects:**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    except Exception as e:
-        await callback.message.reply(f"😢 Failed: {str(e)[:200]}")
-        await safe_delete(callback.message)
-
-@bot.on_callback_query(filters.regex(r"^subject_"))
-async def handle_subject_select(client, callback):
-    """When user clicks a subject button"""
-    try:
-        await progress.show(callback.message, 'videos')
-        _, course_id, subject_id = callback.data.split("_")
-        
-        # This would connect to your video listing function
-        videos = get_videos(course_id, subject_id)  # Your existing function  # Replace with get_videos(course_id, subject_id)
-        
-        if not videos:
-            await callback.answer("No videos found!", show_alert=True)
-            return
             
-        keyboard = []
-        for i, video in enumerate(videos[:5], 1):  # First 5 videos
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"🎥 {i}. {video['Title'][:20]}",
-                    callback_data=f"video_{course_id}_{video['id']}"
-                )
-            ])
-        
-        await callback.edit_message_text(
-            "**Available Videos:**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        await safe_edit(
+            callback.message,
+            "**Available Subjects:**\nSelect one:",
+            InlineKeyboardMarkup(keyboard)
         )
-    
-    except Exception as e:
-        await callback.message.reply(f"😢 Error: {str(e)[:200]}")
-        await safe_delete(callback.message)
 
-@bot.on_callback_query(filters.regex(r"^(cancel|back)"))
-async def handle_actions(client, callback):
-    """For back/cancel buttons"""
-    try:
-        if "cancel" in callback.data:
-            await callback.message.reply("❌ Cancelled")
-        elif "back" in callback.data:
-            await show_courses(client, callback.message)
+@bot.on_callback_query(filters.regex(r"^topic_"))
+async def handle_topic(client, callback):
+    _, course_id, subject_id, topic_id = callback.data.split("_")
+    
+    # Get video token for decryption
+    video_id = "VIDEO_ID_PLACEHOLDER"  # Replace with actual video ID fetch
+    token = get_video_token(course_id, video_id)
+    
+    if not token:
+        await callback.answer("❌ Video unavailable", show_alert=True)
+        return
         
-        await safe_delete(callback.message)
-    except Exception as e:
-        print(f"Action error: {e}")
+    await callback.answer("✅ Download starting...", show_alert=False)
+    await progress.update(callback.message, "⏳ Preparing video download...")
