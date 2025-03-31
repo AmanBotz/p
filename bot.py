@@ -224,7 +224,7 @@ def download_m3u8_playlist(playlist, output_file, key, directory, max_thread=1, 
         print("Not all segments were downloaded successfully.")
         return
     try:
-    merge_segments([os.path.join(directory, f) for f in segment_files], output_file)
+        merge_segments([os.path.join(directory, f) for f in segment_files], output_file)
     except Exception as e:
         print(f"Merge failed: {str(e)}")
         return
