@@ -86,14 +86,22 @@ def get_videos(course_id: str, subject_id: str, topic_id: str):
         return []
 
 def get_video_token(course_id: str, video_id: str):
-    """Get video decryption token"""
+    """Get video decryption token with proper error handling"""
     try:
         response = requests.get(
-            f"{HOST}/get/fetchVideoDetailsById?course_id={course_id}&video_id={video_id}&ytflag=0",
+            f"{HOST}/get/fetchVideoDetailsById?"
+            f"course_id={course_id}&video_id={video_id}&ytflag=0",
             headers=HEADERS,
             timeout=10
         )
-        return response.json()["data"]["video_player_token"]
+        data = response.json().get("data", {})
+        
+        # Add validation for response format
+        if not isinstance(data, dict):
+            print("Invalid API response format")
+            return None
+            
+        return data.get("video_player_token")
     except Exception as e:
         print(f"Token fetch error: {str(e)}")
         return None
