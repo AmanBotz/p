@@ -1,6 +1,6 @@
 from pyrogram import filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from bot import bot, get_all_courses, get_subjects, get_topics, get_video_token
+from bot import bot, get_all_courses, get_subjects, get_topics, get_videos, get_video_token
 import time
 
 # ===== PROGRESS TRACKER =====
