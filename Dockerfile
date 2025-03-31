@@ -1,22 +1,20 @@
 FROM python:3.9-slim
 
-# Install latest FFmpeg
+# Install FFmpeg with proper dependencies
 RUN apt-get update && \
-    apt-get install -y curl && \
-    curl -s https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz | tar xJ && \
-    mv ffmpeg-git-*-amd64-static/ff* /usr/local/bin/ && \
-    apt-get remove -y curl && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y \
+    xz-utils \
+    curl \
+    && curl -L https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz | tar xJ --strip-components=1 -C /usr/local/bin/ \
+    && apt-get remove -y curl xz-utils \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
-
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8000
-
-CMD ["sh", "-c", "python bot.py"]
+CMD ["python", "bot.py"]
