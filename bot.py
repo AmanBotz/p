@@ -24,6 +24,7 @@ from Crypto.Cipher import AES
 import m3u8
 from moviepy.editor import VideoFileClip
 import tempfile
+from PIL import Image
 
 # Import your existing functions from the original script here
 # [Include all the functions from the original code up to handle_download_start]
