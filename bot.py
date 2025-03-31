@@ -230,7 +230,7 @@ def download_m3u8_playlist(playlist, output_file, key, directory, max_thread=1, 
         return
         print(f"\nVideo saved as {output_file}")
 
-    def merge_segments(segment_files, output_file):
+def merge_segments(segment_files, output_file):
     """Merge segments using FFmpeg concat demuxer"""
     try:
         # Create list file for FFmpeg
