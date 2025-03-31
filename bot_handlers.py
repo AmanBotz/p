@@ -142,13 +142,43 @@ async def handle_back(client, callback):
 async def handle_topic(client, callback):
     _, course_id, subject_id, topic_id = callback.data.split("_")
     
-    # Get video token for decryption
-    video_id = "VIDEO_ID_PLACEHOLDER"  # Replace with actual video ID fetch
+    # Get actual videos list
+    videos = get_videos(course_id, subject_id, topic_id)
+    
+    if not videos:
+        await callback.answer("❌ No videos available", show_alert=True)
+        return
+
+    keyboard = []
+    for idx, video in enumerate(videos[:10], 1):
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{idx}. {video['title'][:30]}",
+                callback_data=f"video_{course_id}_{video['video_id']}"  # Use video_id here
+            )
+        ])
+        
+    keyboard.append([
+        InlineKeyboardButton("🔙 Back", callback_data=f"back_topics_{course_id}_{subject_id}")
+    ])
+    
+    await safe_edit(
+        callback.message,
+        "**Available Videos:**\nSelect one:",
+        InlineKeyboardMarkup(keyboard)
+    )
+
+@bot.on_callback_query(filters.regex(r"^video_"))
+async def handle_video_selection(client, callback):
+    _, course_id, video_id = callback.data.split("_")
+    
     token = get_video_token(course_id, video_id)
     
     if not token:
         await callback.answer("❌ Video unavailable", show_alert=True)
         return
+        
+    # Rest of your download logic
         
     await callback.answer("✅ Download starting...", show_alert=False)
     await progress.update(callback.message, "⏳ Preparing video download...")
