@@ -23,8 +23,9 @@ import requests as req
 from Crypto.Cipher import AES
 import m3u8
 from moviepy.editor import VideoFileClip
-import tempfile
+import subprocess
 from PIL import Image
+import tempfile
 
 # Import your existing functions from the original script here
 # [Include all the functions from the original code up to handle_download_start]
@@ -222,14 +223,11 @@ def download_m3u8_playlist(playlist, output_file, key, directory, max_thread=1, 
     if current_segment != len(segment_files):
         print("Not all segments were downloaded successfully.")
         return
-    temp_out = output_file + ".bak"
-    with open(temp_out, "wb") as out_f:
-        for segment_file in segment_files:
-            seg_path = os.path.join(directory, segment_file)
-            with open(seg_path, "rb") as seg_f:
-                out_f.write(seg_f.read())
-            os.remove(seg_path)
-    os.rename(temp_out, output_file)
+    try:
+    merge_segments([os.path.join(directory, f) for f in segment_files], output_file)
+except Exception as e:
+    print(f"Merge failed: {str(e)}")
+    return
     print(f"\nVideo saved as {output_file}")
 
 async def handle_download_start(context, html_path, output_base, chat_id, message_id):
@@ -280,11 +278,6 @@ async def handle_download_start(context, html_path, output_base, chat_id, messag
         await context.bot.edit_message_text(f"⏳ Downloading {quality} quality...", chat_id, message_id)
         download_m3u8_playlist(playlist, final_output, video_dec_key, temp_dir)
         
-        await context.bot.send_video(
-            chat_id=chat_id,
-            video=open(final_output, 'rb'),
-            caption=f"{os.path.basename(output_base)} ({quality})"
-        )
         total_duration = sum(segment.duration for segment in playlist.segments)
         await context.bot.edit_message_text(
             f"⏳ Finalizing video metadata...",
@@ -327,21 +320,27 @@ async def handle_download_start(context, html_path, output_base, chat_id, messag
             message_id
         )
 def get_video_duration(file_path):
-    """Get video duration using moviepy"""
+    """Get duration using ffprobe directly"""
     try:
-        with VideoFileClip(file_path) as video:
-            return int(video.duration)
+        cmd = [
+            'ffprobe', '-v', 'error', '-show_entries',
+            'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path
+        ]
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        return int(float(output.strip()))
     except Exception as e:
         logger.error(f"Duration detection failed: {str(e)}")
         return 0
 
-def generate_thumbnail(video_path, output_path, time_sec=1):
-    """Generate thumbnail using moviepy"""
+def generate_thumbnail(video_path, output_path):
+    """Generate thumbnail using ffmpeg directly"""
     try:
-        with VideoFileClip(video_path) as clip:
-            frame = clip.get_frame(time_sec)
-            image = Image.fromarray(frame)
-            image.save(output_path)
+        cmd = [
+            'ffmpeg', '-y', '-i', video_path,
+            '-ss', '00:00:01', '-vframes', '1',
+            '-q:v', '2', output_path
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
     except Exception as e:
         logger.error(f"Thumbnail generation failed: {str(e)}")
@@ -354,7 +353,7 @@ def health_check():
     return "OK", 200
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8000)
+    app.run(host='0.0.0.0', port=8000, use_reloader=False)
 
 # -------------------- Telegram Bot Configuration --------------------
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -369,7 +368,7 @@ COURSES = 'courses'
 SELECTED_COURSE = 'selected_course'
 SELECTED_SUBJECT = 'selected_subject'
 SELECTED_TOPIC = 'selected_topic'
-SELECTING_QUALITY = 'quality_selected'
+SELECTING_QUALITY = 4
 
 # -------------------- Telegram Bot Handlers --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
