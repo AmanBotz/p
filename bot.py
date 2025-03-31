@@ -61,6 +61,30 @@ def get_topics(course_id: str, subject_id: str):
         print(f"Topic fetch error: {str(e)}")
         return []
 
+# Add this function to bot.py
+def get_videos(course_id: str, subject_id: str, topic_id: str):
+    """Fetch videos for a topic"""
+    try:
+        response = requests.get(
+            f"{HOST}/get/livecourseclassbycoursesubtopconceptapiv3?"
+            f"courseid={course_id}&subjectid={subject_id}"
+            f"&topicid={topic_id}&conceptid=&windowsapp=false&start=-1",
+            headers=HEADERS,
+            timeout=10
+        )
+        return [
+            {
+                "id": v["id"],
+                "title": v.get("Title", "Untitled"),
+                "video_id": v.get("videoid") or v.get("id")  # Critical fix
+            } 
+            for v in response.json().get("data", []) 
+            if v.get("material_type") == "VIDEO"
+        ]
+    except Exception as e:
+        print(f"Video fetch error: {str(e)}")
+        return []
+
 def get_video_token(course_id: str, video_id: str):
     """Get video decryption token"""
     try:
