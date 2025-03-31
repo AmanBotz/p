@@ -2,10 +2,10 @@ python-telegram-bot==20.3
 requests==2.31.0
 m3u8==3.5.0
 pycryptodome==3.19.1
-Flask==3.0.2
+flask==3.0.2
 gunicorn==21.2.0
 moviepy==1.0.3
-Pillow==10.3.0
+pillow==10.3.0
 imageio==2.34.1
 imageio-ffmpeg==0.4.9
 sh==2.0.6
