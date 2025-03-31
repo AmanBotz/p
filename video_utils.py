@@ -1,100 +1,149 @@
 import os
 import re
-import subprocess
-import cv2
+import base64
+import hashlib
 import requests
 from Crypto.Cipher import AES
-from base64 import b64decode
-import m3u8
+from Crypto.Util.Padding import unpad
 from concurrent.futures import ThreadPoolExecutor
+import cv2
+import subprocess
+from typing import Optional
 
-def sanitize_filename(name):
-    """Remove invalid filesystem characters"""
-    return re.sub(r'[\\/*?:"<>|]', "", name)
-
-def get_decryption_key(time_val, token):
+# ===== CORE DECRYPTION =====
+def get_decryption_key(time_val: str, token: str) -> str:
     """Generate AES key from timestamp and token"""
-    n = time_val[-4:]
-    r, i, o = int(n[0]), int(n[1:3]), int(n[3])
-    a = time_val + token[r:i]
-    
-    s = hashlib.sha256(a.encode()).digest()
-    key = s[:16] if o == 6 else (s[:24] if o == 7 else s)
-    return base64.b64encode(key).decode()
-
-def decrypt_data(enc_data, key, iv):
-    """AES-CBC decryption"""
-    cipher = AES.new(b64decode(key), AES.MODE_CBC, b64decode(iv))
-    return unpad(cipher.decrypt(b64decode(enc_data)), AES.block_size).decode()
-
-def download_segment(segment_url, key, iv, output_path):
-    """Download and decrypt a single video segment"""
     try:
-        segment = requests.get(segment_url, timeout=15).content
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        decrypted = cipher.decrypt(segment)
+        n = time_val[-4:]
+        r = int(n[0])
+        i = int(n[1:3])
+        o = int(n[3])
+        combined = time_val + token[r:r+i]
+        sha = hashlib.sha256(combined.encode()).digest()
         
-        with open(output_path, "wb") as f:
-            f.write(decrypted)
-        return True
+        if o == 6:
+            key = sha[:16]
+        elif o == 7:
+            key = sha[:24]
+        else:
+            key = sha
+            
+        return base64.b64encode(key).decode()
     except Exception as e:
-        print(f"Segment download failed: {str(e)}")
-        return False
+        print(f"Key generation failed: {str(e)}")
+        return ""
 
-def download_video_stream(m3u8_url, key, iv, output_path, quality, max_workers=5):
-    """Download video stream with quality selection"""
-    playlist = m3u8.load(m3u8_url)
-    temp_dir = f".temp_{quality}"
-    os.makedirs(temp_dir, exist_ok=True)
-    
-    print(f"Downloading {len(playlist.segments)} segments...")
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for i, segment in enumerate(playlist.segments):
-            futures.append(
-                executor.submit(
+def decrypt_data(enc_data: str, key: str, iv: str) -> str:
+    """AES-CBC decryption with error handling"""
+    try:
+        cipher = AES.new(
+            base64.b64decode(key),
+            AES.MODE_CBC,
+            base64.b64decode(iv)
+        )
+        decrypted = cipher.decrypt(base64.b64decode(enc_data))
+        return unpad(decrypted, AES.block_size).decode()
+    except Exception as e:
+        print(f"Decryption failed: {str(e)}")
+        return ""
+
+# ===== VIDEO DOWNLOAD =====
+def decode_segment(data: str, ext: str) -> bytes:
+    """Handle different encoded formats"""
+    decoders = {
+        "tsa": lambda d: base64.b64decode(''.join([chr(ord(c) - 0x14) for c in d])),
+        "tsb": lambda d: base64.b64decode(''.join([chr((ord(c) >> 0x3) ^ 0x2A) for c in d])),
+        "tsc": lambda d: base64.b64decode(''.join([chr(ord(c) - 0xA) for c in d])),
+        "tsd": lambda d: base64.b64decode(''.join([chr(ord(c) >> 0x2) for c in d])),
+        "tse": lambda d: base64.b64decode(''.join([chr((ord(c) ^ 0x2A) >> 0x3) for c in d]))
+    }
+    return decoders.get(ext, lambda x: x)(data)
+
+def download_segment(url: str, key: bytes, iv: bytes, output_path: str) -> bool:
+    """Download and decrypt a single video segment"""
+    for _ in range(3):  # 3 retries
+        try:
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            
+            # Get file extension and decode
+            ext = url.split('.')[-1]
+            decoded = decode_segment(response.text, ext)
+            
+            # Decrypt with AES
+            cipher = AES.new(key, AES.MODE_CBC, iv)
+            decrypted = cipher.decrypt(decoded)
+            
+            with open(output_path, 'wb') as f:
+                f.write(decrypted)
+            return True
+        except Exception as e:
+            print(f"Segment failed: {url} - {str(e)}")
+    return False
+
+def download_video_stream(m3u8_url: str, key: bytes, iv: bytes, output_file: str) -> bool:
+    """Download entire video stream"""
+    try:
+        playlist = requests.get(m3u8_url).text
+        segments = [line.split()[-1] for line in playlist.split('\n') if line.startswith('http')]
+        
+        temp_dir = f"temp_{os.getpid()}"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Parallel download with progress
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = []
+            for i, seg_url in enumerate(segments):
+                futures.append(executor.submit(
                     download_segment,
-                    segment.uri,
+                    seg_url,
                     key,
                     iv,
-                    f"{temp_dir}/seg_{i}.ts"
-                )
-            )
+                    f"{temp_dir}/seg_{i:04d}.ts"
+                ))
+            
+            # Wait for completion
+            [f.result() for f in futures]
         
-        for future in futures:
-            future.result()
+        # Merge segments
+        with open(output_file, 'wb') as outfile:
+            for i in range(len(segments)):
+                try:
+                    with open(f"{temp_dir}/seg_{i:04d}.ts", 'rb') as infile:
+                        outfile.write(infile.read())
+                    os.remove(f"{temp_dir}/seg_{i:04d}.ts")
+                except FileNotFoundError:
+                    continue
+                    
+        os.rmdir(temp_dir)
+        return True
+    except Exception as e:
+        print(f"Download failed: {str(e)}")
+        return False
 
-    # Combine segments
-    with open(output_path, "wb") as out:
-        for i in range(len(playlist.segments)):
-            try:
-                with open(f"{temp_dir}/seg_{i}.ts", "rb") as seg:
-                    out.write(seg.read())
-                os.remove(f"{temp_dir}/seg_{i}.ts")
-            except FileNotFoundError:
-                continue
-    
-    os.rmdir(temp_dir)
-    return output_path
+# ===== VIDEO PROCESSING =====
+def extract_thumbnail(video_path: str, output_path: str) -> bool:
+    """Extract first frame as thumbnail"""
+    try:
+        cap = cv2.VideoCapture(video_path)
+        success, frame = cap.read()
+        if success:
+            cv2.imwrite(output_path, frame)
+        return success
+    except Exception as e:
+        print(f"Thumbnail failed: {str(e)}")
+        return False
 
-def extract_thumbnail(video_path, output_path):
-    """Extract first frame as thumbnail using OpenCV"""
-    vidcap = cv2.VideoCapture(video_path)
-    success, image = vidcap.read()
-    if success:
-        cv2.imwrite(output_path, image)
-    return success
-
-def convert_to_mp4(input_path, output_path):
-    """Convert video to standard MP4 format"""
-    cmd = [
-        "ffmpeg",
-        "-i", input_path,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-c:a", "aac",
-        "-movflags", "+faststart",
-        output_path
-    ]
-    subprocess.run(cmd, check=True)
-    return output_path
+def convert_to_mp4(input_path: str, output_path: str) -> bool:
+    """Convert to standard MP4 format"""
+    try:
+        subprocess.run([
+            'ffmpeg', '-y', '-i', input_path,
+            '-c:v', 'libx264', '-preset', 'fast',
+            '-c:a', 'aac', '-movflags', '+faststart',
+            output_path
+        ], check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Conversion failed: {str(e)}")
+        return False
