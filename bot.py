@@ -198,7 +198,7 @@ def download_and_decrypt_segment(segment_url, key, iv, output_path):
         logger.error(f"Segment failed: {segment_url} - {str(e)}")
         return False
 
-def download_m3u8_playlist(playlist, output_file, key, directory, max_thread=4, max_segment=0):
+def download_m3u8_playlist(playlist, output_file, key, directory, max_thread=1, max_segment=2):
     os.makedirs(directory, exist_ok=True)
     logger.info(f"Downloading {len(playlist.segments)} segments")
     
