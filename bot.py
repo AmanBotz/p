@@ -26,6 +26,8 @@ from moviepy.editor import VideoFileClip
 import subprocess
 from PIL import Image
 import tempfile
+import glob
+from concurrent.futures import ThreadPoolExecutor
 
 # Import your existing functions from the original script here
 # [Include all the functions from the original code up to handle_download_start]
@@ -155,102 +157,130 @@ total_segments = 0
 current_segment = 0
 
 def download_and_decrypt_segment(segment_url, key, iv, output_path):
-    global current_segment
-    if os.path.exists(output_path):
-        current_segment += 1
-        print(f"Downloaded segments: {current_segment}/{total_segments}", end="\r")
-        return
-    attempt = 0
-    segment_data = None
-    while attempt <= 5:
-        try:
-            response = req.get(segment_url, stream=True, timeout=15)
-            response.raise_for_status()
-            segment_data = response.content
-            break
-        except Exception as e:
-            attempt += 1
-    if not segment_data:
-        print(f"Failed to download segment: {segment_url}")
-        return
-    ext = get_file_extension(segment_url)
-    if ext == "tsa":
-        segment_data = decode_video_tsa(segment_data.decode("utf-8"))
-    elif ext == "tsb":
-        segment_data = decode_video_tsb(segment_data.decode("utf-8"))
-    elif ext == "tsc":
-        segment_data = decode_video_tsc(segment_data.decode("utf-8"))
-    elif ext == "tsd":
-        segment_data = decode_video_tsd(segment_data.decode("utf-8"))
-    elif ext == "tse":
-        segment_data = decode_video_tse(segment_data.decode("utf-8"))
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    decrypted_segment = cipher.decrypt(segment_data)
-    temp_file = output_path + ".bak"
-    with open(temp_file, "wb") as f:
-        f.write(decrypted_segment)
-    os.rename(temp_file, output_path)
-    current_segment += 1
-    print(f"Downloaded segment: {current_segment}/{total_segments}", end="\r")
-
-def download_m3u8_playlist(playlist, output_file, key, directory, max_thread=1, max_segment=1):
-    os.makedirs(directory, exist_ok=True)
-    print(f"\nDownloading video segments into: {output_file}")
-    if not playlist.segments:
-        raise ValueError("No segments found in the playlist")
-    segment_files = []
-    global total_segments, current_segment
-    current_segment = 0
-    total_segments = len(playlist.segments)
-    for i in range(0, len(playlist.segments), max_thread):
-        threads = []
-        batch = playlist.segments[i:i + max_thread]
-        for j, segment in enumerate(batch):
-            if max_segment and (i+j) >= max_segment:
-                break
-            segment_url = segment.uri
-            segment_file = f"segment_{i+j}.ts"
-            segment_files.append(segment_file)
-            iv = None
-            if segment.key and segment.key.method == "AES-128" and segment.key.iv:
-                iv = bytes.fromhex(segment.key.iv[2:])
-            thread = threading.Thread(target=download_and_decrypt_segment,
-                                      args=(segment_url, key, iv, os.path.join(directory, segment_file)))
-            threads.append(thread)
-            thread.start()
-        for t in threads:
-            t.join()
-    if current_segment != len(segment_files):
-        print("Not all segments were downloaded successfully.")
-        return
     try:
-        merge_segments([os.path.join(directory, f) for f in segment_files], output_file)
+        # Download with retries
+        for attempt in range(3):
+            try:
+                response = req.get(segment_url, timeout=15)
+                response.raise_for_status()
+                encrypted_data = response.content
+                break
+            except Exception as e:
+                if attempt == 2:
+                    raise RuntimeError(f"Download failed after 3 attempts: {str(e)}")
+                time.sleep(1)
+        
+        # Decode based on extension
+        ext = segment_url.split('.')[-1].lower()
+        if ext == 'tsa':
+            decoded = base64.b64decode(''.join(chr(ord(c) - 20) for c in encrypted_data.decode()))
+        elif ext == 'tsb':
+            decoded = base64.b64decode(''.join(chr((ord(c) >> 3) ^ 42) for c in encrypted_data.decode()))
+        elif ext == 'tsc':
+            decoded = base64.b64decode(''.join(chr(ord(c) - 10) for c in encrypted_data.decode()))
+        elif ext == 'tsd':
+            decoded = base64.b64decode(''.join(chr(ord(c) >> 2) for c in encrypted_data.decode()))
+        elif ext == 'tse':
+            decoded = base64.b64decode(''.join(chr((ord(c) ^ 42) >> 3) for c in encrypted_data.decode()))
+        else:
+            decoded = encrypted_data
+        
+        # Decrypt
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        decrypted = cipher.decrypt(decoded)
+        
+        # Write output
+        with open(output_path, 'wb') as f:
+            f.write(decrypted)
+        return True
+            
     except Exception as e:
-        print(f"Merge failed: {str(e)}")
-        return
-        print(f"\nVideo saved as {output_file}")
+        logger.error(f"Segment failed: {segment_url} - {str(e)}")
+        return False
+
+def download_m3u8_playlist(playlist, output_file, key, directory, max_thread=4, max_segment=0):
+    os.makedirs(directory, exist_ok=True)
+    logger.info(f"Downloading {len(playlist.segments)} segments")
+    
+    # Download segments
+    success_count = 0
+    with ThreadPoolExecutor(max_workers=max_thread) as executor:
+        futures = []
+        for i, segment in enumerate(playlist.segments):
+            if max_segment and i >= max_segment:
+                break
+            seg_path = os.path.join(directory, f"segment_{i}.ts")
+            futures.append(
+                executor.submit(
+                    download_and_decrypt_segment,
+                    segment.uri,
+                    key,
+                    bytes.fromhex(segment.key.iv[2:]),
+                    seg_path
+                )
+            )
+        
+        for future in futures:
+            if future.result():
+                success_count += 1
+                
+    if success_count == 0:
+        raise RuntimeError("All segment downloads failed")
+    
+    # Merge valid segments
+    segment_files = [os.path.join(directory, f"segment_{i}.ts") 
+                    for i in range(len(playlist.segments))]
+    
+    if not merge_segments(segment_files, output_file):
+        raise RuntimeError("Failed to merge segments")
+    
+    return output_file
 
 def merge_segments(segment_files, output_file):
-    """Merge segments using FFmpeg concat demuxer"""
+    list_file = None
     try:
-        # Create list file for FFmpeg
-        list_file = 'filelist.txt'
-        with open(list_file, 'w') as f:
-            for file in segment_files:
-                f.write(f"file '{file}'\n")
+        # Validate segments first
+        valid_segments = []
+        for seg in segment_files:
+            if os.path.exists(seg) and os.path.getsize(seg) > 1024:  # 1KB min size
+                valid_segments.append(seg)
         
+        if not valid_segments:
+            raise ValueError("No valid segments to merge")
+        
+        # Create temporary list file
+        list_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
+        for seg in valid_segments:
+            list_file.write(f"file '{os.path.abspath(seg)}'\n")
+        list_file.close()
+        
+        # Run FFmpeg
         cmd = [
-            'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
-            '-i', list_file, '-c', 'copy', output_file
+            'ffmpeg', '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-loglevel', 'error',
+            '-i', list_file.name,
+            '-c', 'copy',
+            '-movflags', 'faststart',
+            output_file
         ]
-        subprocess.run(cmd, check=True)
+        
+        result = subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=300
+        )
         return True
-    except Exception as e:
-        logger.error(f"Merge failed: {str(e)}")
+        
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Merge failed: {e.stderr.decode()}")
         return False
     finally:
-        if os.path.exists(list_file):
-            os.remove(list_file)
+        if list_file and os.path.exists(list_file.name):
+            os.remove(list_file.name)
 
 async def handle_download_start(context, html_path, output_base, chat_id, message_id):
     try:
@@ -341,6 +371,26 @@ async def handle_download_start(context, html_path, output_base, chat_id, messag
             chat_id,
             message_id
         )
+        
+async def cleanup_failed_download(output_base, final_output, html_path):
+    """Clean up failed download artifacts"""
+    try:
+        # Remove merged file
+        if os.path.exists(final_output):
+            os.remove(final_output)
+        
+        # Remove segment files
+        base_dir = os.path.dirname(output_base)
+        for f in glob.glob(os.path.join(base_dir, "segment_*")):
+            os.remove(f)
+        
+        # Remove HTML file
+        if os.path.exists(html_path):
+            os.remove(html_path)
+            
+    except Exception as e:
+        logger.error(f"Cleanup error: {str(e)}")
+        
 def get_video_duration(file_path):
     """Get duration using ffprobe directly"""
     try:
@@ -355,18 +405,35 @@ def get_video_duration(file_path):
         return 0
 
 def generate_thumbnail(video_path, output_path):
-    """Generate thumbnail using ffmpeg directly"""
     try:
+        # First try precise method
         cmd = [
-            'ffmpeg', '-y', '-i', video_path,
-            '-ss', '00:00:01', '-vframes', '1',
-            '-q:v', '2', output_path
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-ss', '00:00:01',
+            '-vframes', '1',
+            '-q:v', '2',
+            '-loglevel', 'error',
+            output_path
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, timeout=30)
         return True
-    except Exception as e:
-        logger.error(f"Thumbnail generation failed: {str(e)}")
-        return False
+    except:
+        try:
+            # Fallback to first frame
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', video_path,
+                '-vf', 'select=eq(n\,0)',
+                '-q:v', '2',
+                '-loglevel', 'error',
+                output_path
+            ]
+            subprocess.run(cmd, check=True, timeout=30)
+            return True
+        except Exception as e:
+            logger.error(f"Thumbnail failed: {str(e)}")
+            return False
 # -------------------- Flask Health Check --------------------
 app = Flask(__name__)
 
